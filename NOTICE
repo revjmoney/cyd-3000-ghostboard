@@ -1,0 +1,26 @@
+CYD-3000 GHOSTBOARD
+Copyright (C) 2026 Rev. J. Money
+
+The scripts, tools, board files and patches in this repository are free software: you can redistribute them
+and/or modify them under the terms of the GNU General Public License, version 2, as published by the Free
+Software Foundation (see LICENSE).
+
+GHOSTBOARD stands on other people's work, and all of it keeps its own copyright and license:
+
+- PICSimLab, by Luis Claudio Gamboa Lopes, GPL-2.0.
+  https://github.com/lcgamboa/picsimlab
+  The release download contains the PICSimLab 0.9.3 AppImage contents, unchanged apart from one byte in the
+  picsimlab binary (patches/picsimlab/mirror-fix.py) and the QEMU library below.
+
+- QEMU, by Fabrice Bellard and the QEMU contributors, GPL-2.0 (some files GPL-2.0-or-later or other compatible
+  licenses, as marked in each file).
+  https://www.qemu.org/
+
+- The ESP32 QEMU machine used here: Espressif's ESP32 QEMU work, carried in Luis Claudio Gamboa Lopes's
+  QEMU fork for PICSimLab, branch picsimlab-esp32, commit 5bd15ce.
+  https://github.com/lcgamboa/qemu
+  The patches in patches/qemu/ change three of its files; the release download's libqemu-xtensa.so is built
+  from that commit with those patches (see SOURCES.txt in the release).
+
+ESP32 is a trademark of Espressif Systems. The "Cheap Yellow Display" (ESP32-2432S028) is a board sold by many
+vendors; GHOSTBOARD is not affiliated with any of them.

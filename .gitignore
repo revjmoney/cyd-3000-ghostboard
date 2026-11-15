@@ -1,0 +1,14 @@
+# build and run output
+/build/
+/dist/
+*.tar.xz
+*.AppImage
+*.img
+*.bin
+!board/cyd/*.ppa
+__pycache__/
+*.pyc
+# private notes and scratch
+/local/
+/.superpowers/
+/docs/superpowers/
