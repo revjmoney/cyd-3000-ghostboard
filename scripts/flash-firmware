@@ -3,7 +3,7 @@
 # Copyright (C) 2026 Rev. J. Money
 """Put ESP32 firmware into the GHOSTBOARD's 4 MB flash (like flashing a real CYD over USB).
 
-  flash-firmware MERGED.bin                     a merged 4 MB image (esptool merge_bin, or a flash dump)
+  flash-firmware MERGED.bin                     a merged 4 MB image (esptool merge_bin --fill-flash-size 4MB, or a flash dump)
   flash-firmware --app firmware.bin [--bootloader bootloader.bin] [--partitions partitions.bin]
                  [--otadata boot_app0.bin] [--at 0x10000]
   options: --keep   keep the rest of the flash (default: erase it first, a fresh board)

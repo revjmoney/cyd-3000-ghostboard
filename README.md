@@ -49,6 +49,9 @@ cd cyd-3000-ghostboard-0.1.0
 ./install.sh                         # puts PICSimLab + the patched QEMU in ~/.ghostboard
 ```
 
+Each release also carries the exact PICSimLab and QEMU source it was built from (GPL-2.0), and a
+`SOURCES.txt` saying how.
+
 ### Or build it from source
 
 ```bash
@@ -66,7 +69,7 @@ skips everything already done.
 ```bash
 # separate files from a PlatformIO / Arduino build:
 scripts/flash-firmware --bootloader bootloader.bin --partitions partitions.bin --otadata boot_app0.bin --app firmware.bin
-# or one merged 4 MB image:
+# or one merged 4 MB image (esptool merge_bin --fill-flash-size 4MB ..., or a flash dump):
 scripts/flash-firmware merged-4MB.bin
 
 scripts/ghostboard --fresh           # the board opens on your desktop
