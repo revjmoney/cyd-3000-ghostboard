@@ -90,7 +90,9 @@ tools/lfd3k_bridge.py --port /dev/ttyUSB0 --bbs 127.0.0.1:2323
 ```
 
 It answers `RING` with `ATA`, connects the caller to the board's telnet port on `CONNECT`, and hangs up on
-`NO CARRIER`. It changes no modem settings. On Linux, opening a CP2102 port pulses DTR/RTS; the bridge leaves
+`NO CARRIER`. It changes no modem settings. Like the modem does on a Wi-Fi forward, it tells AXIS the call
+came over the radio (telnet option 90, LFD3K-LINK, with the tier and speed from the `CONNECT` line), so the
+board shows `RADIO SF9` for the caller and gives slow tiers its lighter screens; `--no-link` turns that off. On Linux, opening a CP2102 port pulses DTR/RTS; the bridge leaves
 both raised so the modem doesn't reset.
 
 <p align="center"><a href="https://buymeacoffee.com/revjmoney"><img src="img/buy-me-a-coffee.svg" alt="Buy me a coffee" width="300"></a></p>
