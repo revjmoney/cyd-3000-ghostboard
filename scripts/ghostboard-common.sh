@@ -15,7 +15,7 @@ MONITOR_PORT=4555
 gb_pids() {
     local d exe
     for d in /proc/[0-9]*; do
-        exe="$(tr '\0' '\n' < "$d/cmdline" 2>/dev/null | head -1)" || continue
+        exe="$( { tr '\0' '\n' < "$d/cmdline"; } 2>/dev/null | head -1)" || continue   # (it may exit meanwhile)
         [ "$exe" = "$PS/usr/bin/picsimlab" ] && echo "${d#/proc/}"
     done
     return 0
