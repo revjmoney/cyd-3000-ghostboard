@@ -90,13 +90,19 @@ fi
 say "building libqemu-xtensa.so"
 LIB="$Q/build/libqemu-xtensa.so"
 STAMP="$Q/build/.ghostboard-patches"
-want="$(cat "$REPO"/patches/qemu/*.patch | sha256sum | cut -d' ' -f1)"
+BUILD_FLAGS="no-debug,file-prefix-map"   # (part of the stamp: changing how it builds rebuilds it)
+want="$( { cat "$REPO"/patches/qemu/*.patch; echo "$BUILD_FLAGS"; } | sha256sum | cut -d' ' -f1)"
 if [ -f "$LIB" ] && [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$want" ]; then
     echo "already built with these patches"
 else
-    # the fork's own build script, without its debug build (an optimized library runs much faster)
-    sed 's/--enable-debug --enable-debug-info/--disable-debug-info/' "$Q/build_libqemu-esp32.sh" > "$Q/build-ghostboard.sh"
-    grep -q -- '--disable-debug-info' "$Q/build-ghostboard.sh" || { echo "the fork's build script changed; check build-ghostboard.sh"; exit 1; }
+    # the fork's own build script, without its debug build (an optimized library runs much faster), and with
+    # source paths written as /qemu/... (the library keeps file names for its error messages; this keeps the
+    # builder's home folder out of it)
+    sed -e 's/--enable-debug --enable-debug-info/--disable-debug-info/' \
+        -e "s|--extra-cflags=-fPIC |--extra-cflags='-fPIC -ffile-prefix-map=$Q=/qemu' |" \
+        "$Q/build_libqemu-esp32.sh" > "$Q/build-ghostboard.sh"
+    grep -q -- '--disable-debug-info' "$Q/build-ghostboard.sh" && grep -q -- '-ffile-prefix-map' "$Q/build-ghostboard.sh" \
+        || { echo "the fork's build script changed; check build-ghostboard.sh"; exit 1; }
     (cd "$Q" && sh ./build-ghostboard.sh) > "$PREFIX/qemu-build.log" 2>&1 \
         || { echo "build failed: see $PREFIX/qemu-build.log"; tail -20 "$PREFIX/qemu-build.log"; exit 1; }
     [ -f "$LIB" ] || { echo "build finished but $LIB is missing: see $PREFIX/qemu-build.log"; exit 1; }
