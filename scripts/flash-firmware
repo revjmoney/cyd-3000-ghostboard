@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
+# Copyright (C) 2026 Rev. J. Money
+"""Put ESP32 firmware into the GHOSTBOARD's 4 MB flash (like flashing a real CYD over USB).
+
+  flash-firmware MERGED.bin                     a merged 4 MB image (esptool merge_bin, or a flash dump)
+  flash-firmware --app firmware.bin [--bootloader bootloader.bin] [--partitions partitions.bin]
+                 [--otadata boot_app0.bin] [--at 0x10000]
+  options: --keep   keep the rest of the flash (default: erase it first, a fresh board)
+           --flash FILE   flash file to write (default: $GHOSTBOARD_HOME/workspace/.../mdump_ESP32_DevKitC_ESP32.bin)
+
+Offsets are the ESP32 Arduino/ESP-IDF defaults: bootloader 0x1000, partition table 0x8000, otadata 0xE000,
+app 0x10000. Stop the board first (ghostboard-stop), then start it again with `ghostboard --fresh`.
+"""
+import argparse
+import os
+import sys
+
+SIZE = 4 * 1024 * 1024
+SLOTS = {"bootloader": (0x1000, 0x7000), "partitions": (0x8000, 0x1000), "otadata": (0xE000, 0x2000)}
+
+
+def main():
+    home = os.environ.get("GHOSTBOARD_HOME", os.path.expanduser("~/.ghostboard"))
+    default_flash = os.path.join(home, "workspace", "picsimlab_workspace", "mdump_ESP32_DevKitC_ESP32.bin")
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("merged", nargs="?")
+    ap.add_argument("--app")
+    ap.add_argument("--at", default="0x10000", help="app offset (default 0x10000)")
+    ap.add_argument("--bootloader")
+    ap.add_argument("--partitions")
+    ap.add_argument("--otadata")
+    ap.add_argument("--keep", action="store_true")
+    ap.add_argument("--flash", default=default_flash)
+    a = ap.parse_args()
+
+    if bool(a.merged) == bool(a.app):
+        ap.error("give either one merged 4 MB image or --app (with its bootloader and partitions)")
+    os.makedirs(os.path.dirname(a.flash), exist_ok=True)
+
+    if a.merged:
+        data = open(a.merged, "rb").read()
+        if len(data) != SIZE:
+            sys.exit(f"{a.merged} is {len(data)} bytes; a merged image for the CYD's flash is exactly {SIZE} "
+                     "(use --app/--bootloader/--partitions for separate files)")
+        if data[0x1000] != 0xE9:
+            sys.exit(f"{a.merged} has no ESP32 bootloader at 0x1000 (first byte {data[0x1000]:#04x}, want 0xe9)")
+        flash = bytearray(data)
+    else:
+        if a.keep and os.path.exists(a.flash):
+            flash = bytearray(open(a.flash, "rb").read())
+            if len(flash) != SIZE:
+                sys.exit(f"{a.flash} is not a 4 MB flash")
+        else:
+            flash = bytearray(b"\xff" * SIZE)
+        parts = [(name, getattr(a, name)) for name in SLOTS if getattr(a, name)]
+        app_at = int(a.at, 0)
+        for name, path in parts:
+            off, room = SLOTS[name]
+            blob = open(path, "rb").read()
+            if len(blob) > room:
+                sys.exit(f"{path} is {len(blob)} bytes, more than the {room} bytes room for the {name} at {off:#x}")
+            flash[off:off + len(blob)] = blob
+            print(f"{name:<11} {len(blob):>8} bytes at {off:#07x}  {path}")
+        blob = open(a.app, "rb").read()
+        if blob[:1] != b"\xe9":
+            sys.exit(f"{a.app} is not an ESP32 app image (first byte {blob[:1].hex()}, want e9)")
+        if app_at + len(blob) > SIZE:
+            sys.exit(f"{a.app} ({len(blob)} bytes) does not fit at {app_at:#x} in a 4 MB flash")
+        flash[app_at:app_at + len(blob)] = blob
+        print(f"{'app':<11} {len(blob):>8} bytes at {app_at:#07x}  {a.app}")
+        if not a.bootloader and not a.keep:
+            print("note: no --bootloader given and the flash was erased: the board will not boot without one")
+
+    tmp = a.flash + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(flash)
+    os.replace(tmp, a.flash)
+    print(f"flash written: {a.flash}")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,11 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
+# Copyright (C) 2026 Rev. J. Money
+# Stop the GHOSTBOARD, first copying what the board wrote to flash back into the workspace.
+#   ghostboard-stop [--discard]
+set -uo pipefail
+. "$(dirname "$(readlink -f "$0")")/ghostboard-common.sh"
+if [ -z "$(gb_pids)" ]; then echo "GHOSTBOARD was not running"; exit 0; fi
+[ "${1:-}" = "--discard" ] || gb_save_live
+gb_kill
+echo "GHOSTBOARD stopped"
