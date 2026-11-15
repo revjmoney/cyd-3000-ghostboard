@@ -66,6 +66,9 @@ fi
 export GDK_BACKEND=x11            # PICSimLab's bundled GTK has no Wayland: run on Xwayland
 export GDK_CORE_DEVICE_EVENTS=1   # so tools/tap.py can click the screen
 : > "$GH/serial.log"
+# PICSimLab leaves this marker when a QEMU start fails, and at the next start quietly drops the board's extra
+# QEMU options (our control port) with an "Invalid qemu extra option!" box. Start clean.
+rm -f "${TMPDIR:-/tmp}/picsimlab_qemu_fail"
 setsid nohup "$PS/AppRun" "$PZW" > "$GH/picsimlab.log" 2>&1 < /dev/null &
 
 for _ in $(seq 1 40); do
