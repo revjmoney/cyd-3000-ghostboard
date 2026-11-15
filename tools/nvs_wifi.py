@@ -139,6 +139,21 @@ class Nvs:
             self.set_written(page, first + j)
 
 
+def board_running(home):
+    """True while this install's GHOSTBOARD runs (its PICSimLab is argv[0] of some process)."""
+    exe = os.path.join(home, "picsimlab", "usr", "bin", "picsimlab")
+    for pid in os.listdir("/proc") if os.path.isdir("/proc") else []:
+        if not pid.isdigit():
+            continue
+        try:
+            argv0 = open(f"/proc/{pid}/cmdline", "rb").read().split(b"\0")[0].decode(errors="replace")
+        except OSError:
+            continue
+        if argv0 == exe:
+            return True
+    return False
+
+
 def main():
     home = os.environ.get("GHOSTBOARD_HOME", os.path.expanduser("~/.ghostboard"))
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -151,6 +166,8 @@ def main():
     ap.add_argument("--password-key", default="p0")
     ap.add_argument("--set", nargs=3, metavar=("NAMESPACE", "KEY", "VALUE"))
     a = ap.parse_args()
+    if board_running(home):
+        sys.exit("the GHOSTBOARD is running: stop it first (scripts/ghostboard-stop), or the next start would copy the running board's flash back over this")
 
     flash = bytearray(open(a.flash, "rb").read())
     off, size = find_nvs(flash)

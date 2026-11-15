@@ -97,38 +97,40 @@ def call(ser, host, port, guard):
         log(f'BBS {host}:{port} not reachable ({e}), hanging up')
         hang_up(ser, guard)
         return
-    sock.setblocking(False)
+    sock.settimeout(10)   # reads only happen after select says data is there; sends may wait, up to 10 s
     tn = Telnet()
     tail = b''
     up = down = 0
     log(f'connected to BBS {host}:{port}')
     while True:
-        r, _, _ = select.select([ser.fileno(), sock], [], [], 1.0)
-        if sock in r:
-            try:
+        try:
+            r, _, _ = select.select([ser.fileno(), sock], [], [], 1.0)
+            if sock in r:
                 data = sock.recv(4096)
-            except BlockingIOError:
-                data = None
-            if data == b'':
-                log(f'BBS closed the connection ({down} bytes to caller, {up} from caller)')
-                sock.close()
-                hang_up(ser, guard)
-                return
-            if data:
+                if data == b'':
+                    log(f'BBS closed the connection ({down} bytes to caller, {up} from caller)')
+                    sock.close()
+                    hang_up(ser, guard)
+                    return
                 clean = tn.feed(data, sock)
                 if clean:
                     ser.write(clean)
                     down += len(clean)
-        if ser.fileno() in r:
-            data = ser.read(ser.in_waiting or 1)
-            if data:
-                tail = (tail + data)[-32:]
-                if b'NO CARRIER' in tail:
-                    log(f'NO CARRIER ({down} bytes to caller, {up} from caller)')
-                    sock.close()
-                    return
-                sock.sendall(data.replace(bytes([IAC]), bytes([IAC, IAC])))
-                up += len(data)
+            if ser.fileno() in r:
+                data = ser.read(ser.in_waiting or 1)
+                if data:
+                    tail = (tail + data)[-32:]
+                    if b'NO CARRIER' in tail:
+                        log(f'NO CARRIER ({down} bytes to caller, {up} from caller)')
+                        sock.close()
+                        return
+                    sock.sendall(data.replace(bytes([IAC]), bytes([IAC, IAC])))
+                    up += len(data)
+        except OSError as e:   # the BBS reset or stopped answering: end this call, keep the bridge running
+            log(f'BBS connection lost ({e}), hanging up ({down} bytes to caller, {up} from caller)')
+            sock.close()
+            hang_up(ser, guard)
+            return
 
 
 def main():

@@ -20,6 +20,21 @@ SIZE = 4 * 1024 * 1024
 SLOTS = {"bootloader": (0x1000, 0x7000), "partitions": (0x8000, 0x1000), "otadata": (0xE000, 0x2000)}
 
 
+def board_running(home):
+    """True while this install's GHOSTBOARD runs (its PICSimLab is argv[0] of some process)."""
+    exe = os.path.join(home, "picsimlab", "usr", "bin", "picsimlab")
+    for pid in os.listdir("/proc") if os.path.isdir("/proc") else []:
+        if not pid.isdigit():
+            continue
+        try:
+            argv0 = open(f"/proc/{pid}/cmdline", "rb").read().split(b"\0")[0].decode(errors="replace")
+        except OSError:
+            continue
+        if argv0 == exe:
+            return True
+    return False
+
+
 def main():
     home = os.environ.get("GHOSTBOARD_HOME", os.path.expanduser("~/.ghostboard"))
     default_flash = os.path.join(home, "workspace", "picsimlab_workspace", "mdump_ESP32_DevKitC_ESP32.bin")
@@ -33,6 +48,8 @@ def main():
     ap.add_argument("--keep", action="store_true")
     ap.add_argument("--flash", default=default_flash)
     a = ap.parse_args()
+    if board_running(home):
+        sys.exit("the GHOSTBOARD is running: stop it first (scripts/ghostboard-stop), or the next start would copy the running board's flash back over this")
 
     if bool(a.merged) == bool(a.app):
         ap.error("give either one merged 4 MB image or --app (with its bootloader and partitions)")

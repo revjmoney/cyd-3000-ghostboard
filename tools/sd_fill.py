@@ -33,12 +33,29 @@ except ImportError:
     sys.exit("pyfatfs is needed: python3 -m pip install --user pyfatfs==1.1.0  (or in a venv)")
 
 
+def board_running(home):
+    """True while this install's GHOSTBOARD runs (its PICSimLab is argv[0] of some process)."""
+    exe = os.path.join(home, "picsimlab", "usr", "bin", "picsimlab")
+    for pid in os.listdir("/proc") if os.path.isdir("/proc") else []:
+        if not pid.isdigit():
+            continue
+        try:
+            argv0 = open(f"/proc/{pid}/cmdline", "rb").read().split(b"\0")[0].decode(errors="replace")
+        except OSError:
+            continue
+        if argv0 == exe:
+            return True
+    return False
+
+
 def main():
     home = os.environ.get("GHOSTBOARD_HOME", os.path.expanduser("~/.ghostboard"))
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("src")
     ap.add_argument("--image", default=os.path.join(home, "sd.img"))
     a = ap.parse_args()
+    if board_running(home):
+        sys.exit("the GHOSTBOARD is running: stop it first (scripts/ghostboard-stop); the emulator has the SD image open")
     if not os.path.isdir(a.src):
         sys.exit(f"{a.src} is not a folder")
     fs = PyFatFS(a.image)

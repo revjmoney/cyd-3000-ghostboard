@@ -38,9 +38,12 @@ D="$STAGE/$NAME"
 mkdir -p "$D"
 cp -a "$PREFIX/picsimlab" "$D/picsimlab"
 rm -f "$D/picsimlab/usr/bin/picsimlab.orig" "$D/picsimlab/usr/lib/picsimlab/qemu/libqemu-xtensa.so.orig"
-cp -a "$REPO/scripts" "$REPO/tools" "$REPO/board" "$REPO/patches" "$D/"
-mkdir -p "$D/docs" && cp -a "$REPO/docs/AXIS.md" "$REPO/docs/HOW-IT-WORKS.md" "$REPO/docs/img" "$D/docs/"
-cp "$REPO/README.md" "$REPO/LICENSE" "$REPO/NOTICE" "$D/"
+# the repo part: committed files only (never local edits, stray files or __pycache__)
+git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 || { echo "package from a git checkout of the repo"; exit 1; }
+[ -z "$(git -C "$REPO" status --porcelain -- scripts tools board patches docs README.md LICENSE NOTICE)" ] \
+    || echo "note: uncommitted changes in the repo are left out (the release is built from HEAD)"
+git -C "$REPO" archive HEAD scripts tools board patches docs/AXIS.md docs/HOW-IT-WORKS.md docs/img \
+    README.md LICENSE NOTICE | tar -x -C "$D"
 rm -f "$D/scripts/check-private.sh" "$D/scripts/package-release.sh"
 qcommit="$(git -C "$PREFIX/src/qemu" rev-parse HEAD)"
 cat > "$D/SOURCES.txt" <<EOF
@@ -58,6 +61,10 @@ libqemu-xtensa.so   built from https://github.com/lcgamboa/qemu branch picsimlab
              -ffile-prefix-map=<source dir>=/qemu added to --extra-cflags (scripts/setup.sh does exactly this).
 
 everything else: CYD-3000 GHOSTBOARD, https://github.com/revjmoney/cyd-3000-ghostboard (tag v$VERSION)
+
+The complete corresponding source of both binaries is published next to this download on the same release:
+  picsimlab-0.9.3-src.tar.xz       PICSimLab at tag v0.9.3
+  qemu-${qcommit:0:7}-src.tar.xz        lcgamboa/qemu at $qcommit (apply patches/qemu/*.patch)
 EOF
 cat > "$D/install.sh" <<'EOF'
 #!/bin/bash
@@ -78,7 +85,29 @@ echo "installed into $PREFIX/picsimlab"
 echo "next: scripts/flash-firmware ..., then scripts/ghostboard --fresh  (see README.md)"
 EOF
 chmod +x "$D/install.sh"
+# last look before packing: nothing from this machine, nothing on the personal list (if the repo has one)
+hits=0
+while IFS= read -r -d '' f; do
+    if grep -qI -e "$HOME" -e "/home/$(id -un)" "$f" 2>/dev/null \
+       || { [ -s "$f" ] && ! grep -qI . "$f" && strings "$f" | grep -q -e "$HOME" -e "/home/$(id -un)"; }; then
+        echo "PRIVATE: ${f#$STAGE/} has paths from this machine"; hits=1
+    fi
+    if [ -f "$REPO/local/private-patterns.txt" ]; then
+        while IFS= read -r pat; do
+            pat="${pat%$'\r'}"; [ -n "$pat" ] && [ "${pat:0:1}" != "#" ] || continue
+            grep -qaiE "$pat" "$f" && { echo "PRIVATE: ${f#$STAGE/} matches a personal pattern"; hits=1; }
+        done < "$REPO/local/private-patterns.txt"
+    fi
+done < <(find "$D" -type f -print0)
+[ $hits -eq 0 ] || { echo "not packing: see above"; exit 1; }
+echo "privacy scan of the release: clean"
+
 mkdir -p "$OUT"
 tar -C "$STAGE" -cJf "$OUT/$NAME-linux-x86_64.tar.xz" "$NAME"
-(cd "$OUT" && sha256sum "$NAME-linux-x86_64.tar.xz" > "$NAME-linux-x86_64.tar.xz.sha256")
-ls -la "$OUT/$NAME-linux-x86_64.tar.xz"
+# GPL-2.0: the complete source of both binaries, as release files next to the tarball
+git -C "$PREFIX/src/qemu" archive --prefix="qemu-${qcommit:0:7}/" "$qcommit" | xz -T0 > "$OUT/qemu-${qcommit:0:7}-src.tar.xz"
+PSRC="$PREFIX/src/picsimlab"
+[ -d "$PSRC/.git" ] || git clone -q --depth 1 --branch v0.9.3 https://github.com/lcgamboa/picsimlab "$PSRC"
+git -C "$PSRC" archive --prefix=picsimlab-0.9.3/ HEAD | xz -T0 > "$OUT/picsimlab-0.9.3-src.tar.xz"
+(cd "$OUT" && sha256sum "$NAME-linux-x86_64.tar.xz" picsimlab-0.9.3-src.tar.xz "qemu-${qcommit:0:7}-src.tar.xz" > SHA256SUMS)
+ls -la "$OUT"

@@ -6,6 +6,5 @@
 set -uo pipefail
 . "$(dirname "$(readlink -f "$0")")/ghostboard-common.sh"
 if [ -z "$(gb_pids)" ]; then echo "GHOSTBOARD was not running"; exit 0; fi
-[ "${1:-}" = "--discard" ] || gb_save_live
-gb_kill
+if [ "${1:-}" = "--discard" ]; then gb_stop; else gb_stop save; fi
 echo "GHOSTBOARD stopped"

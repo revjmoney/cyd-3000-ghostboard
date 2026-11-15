@@ -33,18 +33,26 @@ if [ ! -f "$WS/picsimlab.ini" ]; then
     if [ ! -f "$sd" ] && command -v mkfs.fat >/dev/null; then
         truncate -s 256M "$sd" && mkfs.fat -F 32 -n GHOSTSD "$sd" >/dev/null && echo "made a blank 256 MB SD card: $sd"
     fi
-    if [ -f "$sd" ]; then
-        sed -e "s|@SDIMG@|$sd|" -e "s|@SERIALLOG@|$GH/serial.log|" "$REPO/board/cyd/parts_ESP32_DevKitC.pcf" > "$WS/parts_ESP32_DevKitC.pcf"
-    else
-        echo "no SD card (mkfs.fat not found: sudo apt install dosfstools, then delete $WS to start over)"
-        grep -v '^SD Card,' "$REPO/board/cyd/parts_ESP32_DevKitC.pcf" | sed "s|@SERIALLOG@|$GH/serial.log|" > "$WS/parts_ESP32_DevKitC.pcf"
-    fi
+    # the paths go in as plain text (any character in them is fine)
+    python3 -c '
+import os, sys
+src, dst, sd, log = sys.argv[1:5]
+lines = open(src).read().splitlines()
+if not os.path.isfile(sd):
+    lines = [l for l in lines if not l.startswith("SD Card,")]
+open(dst, "w").write("\n".join(l.replace("@SDIMG@", sd).replace("@SERIALLOG@", log) for l in lines) + "\n")
+' "$REPO/board/cyd/parts_ESP32_DevKitC.pcf" "$WS/parts_ESP32_DevKitC.pcf" "$sd" "$GH/serial.log"
+    [ -f "$sd" ] || echo "no SD card (mkfs.fat not found). To add one later: sudo apt install dosfstools, delete" \
+        "$WS/picsimlab.ini (only that file: the flash stays) and start again"
 fi
 [ -f "$FLASH" ] || head -c 4194304 /dev/zero | tr '\0' '\377' > "$FLASH"
 
-[ $fresh -eq 1 ] || gb_save_live
-gb_kill
-sleep 1
+if [ $fresh -eq 1 ]; then gb_stop; else gb_stop save; fi
+# the QEMU control port must be free for this board (another emulator holding it would get our commands)
+if ss -ltn 2>/dev/null | grep -q "127.0.0.1:$MONITOR_PORT "; then
+    echo "port $MONITOR_PORT (the emulator's control port) is already in use by another program: stop that first"
+    exit 1
+fi
 gb_pack
 
 # a desktop session, also when started over ssh
@@ -56,7 +64,7 @@ fi
 [ -d /run/user/"$(id -u)" ] && export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 [ -S /run/user/"$(id -u)"/bus ] && export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/$(id -u)/bus}"
 export GDK_BACKEND=x11            # PICSimLab's bundled GTK has no Wayland: run on Xwayland
-export GDK_CORE_DEVICE_EVENTS=1   # so scripts/tap can click the screen
+export GDK_CORE_DEVICE_EVENTS=1   # so tools/tap.py can click the screen
 : > "$GH/serial.log"
 setsid nohup "$PS/AppRun" "$PZW" > "$GH/picsimlab.log" 2>&1 < /dev/null &
 
@@ -74,12 +82,14 @@ if [ $forward -eq 1 ]; then
             continue
         fi
         python3 - "$MONITOR_PORT" "hostfwd_add u1 $1::$2-:$3" <<'P'
-import socket, sys, time
+import re, socket, sys, time
 s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=5)
 time.sleep(0.5); s.recv(65536)
-s.sendall(sys.argv[2].encode() + b"\n"); time.sleep(0.7); s.recv(65536)
+s.sendall(sys.argv[2].encode() + b"\n"); time.sleep(0.8)
+reply = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", s.recv(65536).decode(errors="replace"))
+sys.exit(1 if re.search(r"could not|error|invalid|unknown", reply, re.I) else 0)
 P
-        echo "forward: host $1 $2 -> board $3"
+        if [ $? -eq 0 ]; then echo "forward: host $1 $2 -> board $3"; else echo "forward host $1 $2 -> board $3 FAILED"; fi
     done
 fi
 echo "GHOSTBOARD running (serial log: $GH/serial.log)"
