@@ -1,0 +1,72 @@
+From: Rev. J. Money
+Subject: [PATCH 2/3] esp32_spi: send the flash's dummy cycles in user-mode reads
+
+ESP-IDF reads flash on SPI1 with user-mode transactions (0xEB quad I/O read): command, 24-bit address plus
+mode byte, dummy cycles, data. The controller model sent the command and address but no dummy cycles, so
+m25p80 took the first data bytes as its dummies and every read came back shifted. The app ran (code comes
+through the cache path), but NVS and LittleFS saw garbage: NVS was erased at every boot (saved Wi-Fi lost)
+and LittleFS failed to mount and to format.
+
+Sending ESP-IDF's DUMMY_CYCLELEN + 1 is not right either: that count includes extra cycles real hardware
+needs for signal delay at speed (ESP-IDF asks for 7 on a 4-cycle quad read), and with no delay here the
+data then came back 3 bytes late. So the model sends the flash's own count, one byte per cycle the way
+m25p80 counts them: 4 for 0xEB/0xEC, 8 for 0x0B/0x3B/0x6B and their 4-byte forms, and only for those
+reads (status and ID commands carry the dummy bit too and must not get any).
+
+diff --git a/hw/ssi/esp32_spi.c b/hw/ssi/esp32_spi.c
+index 831801f..e861d6c 100644
+--- a/hw/ssi/esp32_spi.c
++++ b/hw/ssi/esp32_spi.c
+@@ -185,6 +185,7 @@ typedef struct Esp32SpiTransaction {
+     uint32_t cmd;
+     int addr_bytes;
+     uint32_t addr;
++    int dummy_bytes;   /* dummy cycles, one byte each (how m25p80 models them) */
+     int data_tx_bytes;
+     int data_rx_bytes;
+     uint32_t* data;
+@@ -235,6 +236,9 @@ static void esp32_spi_transaction(Esp32SpiState *s, Esp32SpiTransaction *t)
+     esp32_spi_cs_set(s, 0);
+     esp32_spi_txrx_buffer(s, &t->cmd, t->cmd_bytes, 0);
+     esp32_spi_txrx_buffer(s, &t->addr, t->addr_bytes, 0);
++    for (int i = 0; i < t->dummy_bytes; i++) {
++        ssi_transfer(s->spi, 0);
++    }
+     esp32_spi_txrx_buffer(s, t->data, t->data_tx_bytes, t->data_rx_bytes);
+     esp32_spi_cs_set(s, 1);
+ }
+@@ -439,6 +443,12 @@ static void esp32_spi_do_command(Esp32SpiState* s, uint32_t cmd_reg)
+             } while (addr != 0);            
+             //uint64_t ns_to_timeout = s->mosi_dlen_reg * 25;  // about 75fps, same a real hw
+             //timer_mod_ns(&s->spi_timer, ns_now + 1/*ns_to_timeout*/);
++            /* OUTLINK_START and INLINK_START start one DMA transfer and clear themselves on the chip.
++               Left set, every later register (PIO) transfer on this bus was sent as DMA again from the
++               old descriptor list: LovyanGFX's commands after its first DMA image went out as stale
++               pixels, so the LCD wrapped and striped. */
++            s->outlink_reg &= ~R_SPI_DMA_OUT_LINK_START_MASK;
++            s->inlink_reg &= ~R_SPI_DMA_IN_LINK_START_MASK;
+             esp32_spi_timer_cb(s);
+             return;
+         }
+@@ -453,6 +463,21 @@ static void esp32_spi_do_command(Esp32SpiState* s, uint32_t cmd_reg)
+             t.addr_bytes = bitlen_to_bytes(FIELD_EX32(s->user1_reg, SPI_USER1, ADDR_BITLEN));
+             t.addr = bswap32(s->addr_reg);
+         }
++        /* user-mode reads (ESP-IDF's 0xEB quad read and friends) carry dummy cycles; without them the
++           flash model eats the first data bytes as dummies and every read comes back shifted */
++        if (FIELD_EX32(s->user_reg, SPI_USER, DUMMY) && t.cmd_bytes == 1) {
++            /* the flash's own dummy count, as m25p80 models it (one byte per cycle). ESP-IDF's
++               DUMMY_CYCLELEN also holds the extra cycles real hardware needs for signal delay at
++               speed; there is no delay here, so sending those would eat the first data bytes. */
++            switch (t.cmd & 0xff) {
++            case 0xeb: case 0xec:                                  /* quad I/O read */
++                t.dummy_bytes = 4;
++                break;
++            case 0x0b: case 0x0c: case 0x3b: case 0x3c: case 0x6b: case 0x6c:  /* fast, dual, quad out */
++                t.dummy_bytes = 8;
++                break;
++            }
++        }
+         if (FIELD_EX32(s->user_reg, SPI_USER, MOSI)) {
+             t.data = &s->data_reg[0];
+             t.data_tx_bytes = bitlen_to_bytes(s->mosi_dlen_reg);

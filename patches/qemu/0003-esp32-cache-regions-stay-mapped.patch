@@ -1,0 +1,71 @@
+From: Rev. J. Money
+Subject: [PATCH 3/3] esp32_dport: keep the cache regions mapped while the guest turns the cache off
+
+ESP-IDF turns the flash cache off and back on around every flash read, write and erase, on both cores.
+The model answered each toggle with memory_region_set_enabled() on the drom0 and iram0 regions, and each
+call rebuilt QEMU's whole memory map (generate_memory_topology) while holding the big lock, with the other
+core blocked on that lock. That cost about 11 ms per flash call: a board saving files to internal flash
+did about 250 flash operations a second, and an AXIS cluster node copying users stalled for 12 to 150 s
+and dropped out of its cluster.
+
+Correct code never reads cached flash while the cache is off, so the regions now stay mapped once the
+guest has enabled them; the cached data still re-syncs from flash when the guest turns the cache back on
+(guest_enabled tracks what the guest asked for). Measured on the same join: 5170 -> 33271 flash operations
+in 20 s, long pauses 1750 -> 39.
+
+diff --git a/hw/misc/esp32_dport.c b/hw/misc/esp32_dport.c
+index f2c57d6..ea8093d 100644
+--- a/hw/misc/esp32_dport.c
++++ b/hw/misc/esp32_dport.c
+@@ -295,17 +295,27 @@ static void esp32_cache_state_update(Esp32CacheState* cs)
+ 
+     bool drom0_enabled = cache_enabled &&
+         FIELD_EX32(cs->cache_ctrl1_reg, DPORT_PRO_CACHE_CTRL1, MASK_DROM0) == 0;
+-    if (!cs->drom0.mem.enabled && drom0_enabled) {
++    /* Keep the region mapped when the guest turns the cache off: ESP-IDF turns it off and on around every flash
++       call, and each map change rebuilt QEMU's whole memory map (about 11 ms of a stalled guest per flash call).
++       Correct code never reads cached flash while the cache is off, so leaving it mapped changes nothing it can
++       see; the data still re-syncs from flash when the cache comes back on. */
++    if (!cs->drom0.guest_enabled && drom0_enabled) {
+         esp32_cache_data_sync(&cs->drom0);
+     }
+-    memory_region_set_enabled(&cs->drom0.mem, drom0_enabled);
++    cs->drom0.guest_enabled = drom0_enabled;
++    if (drom0_enabled && !cs->drom0.mem.enabled) {
++        memory_region_set_enabled(&cs->drom0.mem, true);
++    }
+ 
+     bool iram0_enabled = cache_enabled &&
+         FIELD_EX32(cs->cache_ctrl1_reg, DPORT_PRO_CACHE_CTRL1, MASK_IRAM0) == 0;
+-    if (!cs->iram0.mem.enabled && iram0_enabled) {
++    if (!cs->iram0.guest_enabled && iram0_enabled) {
+         esp32_cache_data_sync(&cs->iram0);
+     }
+-    memory_region_set_enabled(&cs->iram0.mem, iram0_enabled);
++    cs->iram0.guest_enabled = iram0_enabled;
++    if (iram0_enabled && !cs->iram0.mem.enabled) {
++        memory_region_set_enabled(&cs->iram0.mem, true);
++    }
+ 
+     if (cs->dport->has_psram) {
+         bool dram1_enabled = cache_enabled &&
+@@ -320,6 +330,7 @@ static void esp32_cache_region_reset(Esp32CacheRegionState *crs)
+         crs->mmu_table[i] = ESP32_CACHE_MMU_ENTRY_CHANGED;
+     }
+     crs->illegal_access_trap_en = false;
++    crs->guest_enabled = false;
+ }
+ 
+ static void esp32_cache_reset(Esp32CacheState *cs)
+diff --git a/include/hw/misc/esp32_dport.h b/include/hw/misc/esp32_dport.h
+index 655bcde..a31f0be 100644
+--- a/include/hw/misc/esp32_dport.h
++++ b/include/hw/misc/esp32_dport.h
+@@ -34,6 +34,7 @@ typedef struct Esp32CacheRegionState {
+     uint32_t illegal_access_retval;
+     bool illegal_access_trap_en;
+     bool illegal_access_status;
++    bool guest_enabled;   /* what the guest asked for; the region itself stays mapped once enabled */
+     uint16_t mmu_table[ESP32_CACHE_PAGES_PER_REGION];
+ } Esp32CacheRegionState;
+ 
