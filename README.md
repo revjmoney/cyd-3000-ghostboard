@@ -97,10 +97,10 @@ internal flash. Click the screen to touch it. Each start opens PICSimLab with th
 | `tools/nvs_wifi.py` | preloads the emulated Wi-Fi (open network `PICSimLabWifi`) into NVS, so firmware joins without touch |
 | `tools/sd_fill.py DIR` | copies a folder tree onto the SD card image (needs `pyfatfs`) |
 | `tools/tap.py X Y` | taps the screen at the firmware's coordinates, for scripts and tests (a person just clicks) |
+| `tools/lfd3k_bridge.py` | an [LRA FLOWTRON DATAMASTER 3000 SERIAL MODEM - LFD3K-SM](https://github.com/revjmoney/lfd3k-sm) on USB answers radio calls into the board |
 
 To type into the board's serial console from a script, use PICSimLab's remote control on port 5000: send
 `set part[02].in[01] YOUR COMMAND` (part 02 is the serial terminal).
-| `tools/lfd3k_bridge.py` | an [LRA FLOWTRON DATAMASTER 3000 SERIAL MODEM - LFD3K-SM](https://github.com/revjmoney/lfd3k-sm) on USB answers radio calls into the board |
 
 If GHOSTBOARD saved you a board (or a weekend), keep the coffee coming:
 
