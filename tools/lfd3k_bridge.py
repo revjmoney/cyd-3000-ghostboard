@@ -5,7 +5,7 @@
 
 usage: lfd3k_bridge.py [--port /dev/ttyUSB0] [--bbs 127.0.0.1:2323]
 
-The modem is the LORA FLOWTRON DATAMASTER 3000 SERIAL MODEM - LFD3K-SM (https://github.com/revjmoney/lfd3k-sm)
+The modem is the LRA FLOWTRON DATAMASTER 3000 SERIAL MODEM - LFD3K-SM (https://github.com/revjmoney/lfd3k-sm)
 on USB; the BBS is the GHOSTBOARD's telnet forward. Needs pyserial.
 
 The modem stays in its own settings (S0=0, nothing saved): on RING this sends ATA, on CONNECT it opens

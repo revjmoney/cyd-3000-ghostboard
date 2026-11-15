@@ -77,7 +77,7 @@ the node kept dropping out).
 
 ## 6. Radio calls through an LFD3K-SM modem
 
-Plug a [LORA FLOWTRON DATAMASTER 3000 SERIAL MODEM - LFD3K-SM](https://github.com/revjmoney/lfd3k-sm) into the
+Plug a [LRA FLOWTRON DATAMASTER 3000 SERIAL MODEM - LFD3K-SM](https://github.com/revjmoney/lfd3k-sm) into the
 same PC and run:
 
 ```bash

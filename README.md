@@ -95,7 +95,7 @@ internal flash. Each start opens PICSimLab with the board already wired:
 | `tools/nvs_wifi.py` | preloads the emulated Wi-Fi (open network `PICSimLabWifi`) into NVS, so firmware joins without touch |
 | `tools/sd_fill.py DIR` | copies a folder tree onto the SD card image (needs `pyfatfs`) |
 | `tools/tap.py X Y` | sends a tap to the screen at the firmware's coordinates |
-| `tools/lfd3k_bridge.py` | a [LORA FLOWTRON DATAMASTER 3000 SERIAL MODEM - LFD3K-SM](https://github.com/revjmoney/lfd3k-sm) on USB answers radio calls into the board |
+| `tools/lfd3k_bridge.py` | a [LRA FLOWTRON DATAMASTER 3000 SERIAL MODEM - LFD3K-SM](https://github.com/revjmoney/lfd3k-sm) on USB answers radio calls into the board |
 
 If GHOSTBOARD saved you a board (or a weekend), keep the coffee coming:
 
