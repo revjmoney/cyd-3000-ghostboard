@@ -1,0 +1,184 @@
+From: Rev. J. Money
+Subject: [PATCH 4/5] esp32_gpio: GPIO32-39 outputs, and tell PICSimLab which pins are inputs
+
+Three gaps that kept PICSimLab parts from talking to firmware on the high GPIOs:
+
+1. GPIO_OUT1 / GPIO_ENABLE1 (GPIO32-39) were ignored and only GPIO0-31 were wired to PICSimLab as outputs, so
+   writes to GPIO32 and 33 never left the chip. A CYD drives its XPT2046 touch controller's MOSI (GPIO32) and CS
+   (GPIO33) there. Both registers (and their W1TS/W1TC forms) now work, masked to GPIO32-33: GPIO34-39 have no
+   output driver on a real ESP32, and firmware does set those enable bits (a CYD's GPIO39 is the touch MISO).
+2. PICSimLab only passes a part's output to the firmware on pins it believes are inputs, and learns a pin's
+   direction only from output-enable changes. Pins that are inputs from reset never change their enable bit, so
+   a part driving them (the XPT2046's DOUT on GPIO39, its PENIRQ on GPIO36) was never heard. The first read of
+   GPIO_IN / GPIO_IN1 now reports every pin that is not an output as an input, once.
+3. esp32_picsimlab.c wires GPIO32-39 as outputs to PICSimLab too.
+
+diff --git a/hw/gpio/esp32_gpio.c b/hw/gpio/esp32_gpio.c
+index 0af590e77e..95ec855605 100644
+--- a/hw/gpio/esp32_gpio.c
++++ b/hw/gpio/esp32_gpio.c
+@@ -23,6 +23,25 @@
+ #include "sysemu/runstate.h"
+ 
+ 
++
++/* Tell PICSimLab once that every pin the firmware has not made an output is an input (as a real ESP32 is out of
++   reset): PICSimLab only lets parts drive pins it knows are inputs, and learns directions only from output-enable
++   changes, which input-from-reset pins (all of GPIO34-39) never make. */
++static void report_inputs(Esp32GpioState *s, int first, int last)
++{
++    for (int i = first; i <= last; i++) {
++        uint64_t bit = 1ULL << i;
++        if (s->dir_reported & bit) {
++            continue;
++        }
++        s->dir_reported |= bit;
++        int enabled = i < 32 ? (s->gpio_enable >> i) & 1 : (s->gpio_enable1 >> (i - 32)) & 1;
++        if (!enabled) {
++            qemu_set_irq(s->gpios_dir[i], 0);
++        }
++    }
++}
++
+ static uint64_t esp32_gpio_read(void *opaque, hwaddr addr, unsigned int size)
+ {
+     Esp32GpioState *s = ESP32_GPIO(opaque);
+@@ -31,17 +50,25 @@ static uint64_t esp32_gpio_read(void *opaque, hwaddr addr, unsigned int size)
+         case 0x04: //GPIO_OUT_REG
+             r = s->gpio_out;
+             break;
++        case 0x10: //GPIO_OUT1_REG
++            r = s->gpio_out1;
++            break;
+         case 0x20: //GPIO_ENABLE_REG
+             r = s->gpio_enable;
+             break;
++        case 0x2C: //GPIO_ENABLE1_REG
++            r = s->gpio_enable1;
++            break;
+         case 0x38: //A_GPIO_STRAP:
+             r = s->strap_mode;
+             break;
+         case 0x3C: //GPIO_IN_REG
++            report_inputs(s, 0, 31);
+             qemu_set_irq(s->gpios_sync[0], -1); //request sync
+             r = s->gpio_in;
+             break;
+         case 0x40: //GPIO_IN1_REG 
++            report_inputs(s, 32, 39);
+             qemu_set_irq(s->gpios_sync[0], -1); //request sync
+             r = s->gpio_in1;
+             break;
+@@ -143,6 +170,8 @@ static void esp32_gpio_write(void *opaque, hwaddr addr, uint64_t value,
+     uint32_t oldenable;
+     oldvalue = s->gpio_out;
+     oldenable = s->gpio_enable;
++    uint32_t oldvalue1 = s->gpio_out1;
++    uint32_t oldenable1 = s->gpio_enable1;
+     switch (addr) {
+         case 0x04: //GPIO_OUT_REG
+             s->gpio_out = value;
+@@ -153,9 +182,27 @@ static void esp32_gpio_write(void *opaque, hwaddr addr, uint64_t value,
+         case 0x0C: //GPIO_OUT_W1TC_REG 
+             s->gpio_out &= ~value;
+             break;
++        case 0x10: //GPIO_OUT1_REG (GPIO32-39)
++            s->gpio_out1 = value & 0x03;   /* only GPIO32 and 33 can drive: 34-39 are input-only */
++            break;
++        case 0x14: //GPIO_OUT1_W1TS_REG
++            s->gpio_out1 |= value & 0x03;
++            break;
++        case 0x18: //GPIO_OUT1_W1TC_REG
++            s->gpio_out1 &= ~value;
++            break;
+         case 0x20: //GPIO_ENABLE_REG
+             s->gpio_enable = value;
+             break;
++        case 0x2C: //GPIO_ENABLE1_REG
++            s->gpio_enable1 = value & 0x03;   /* GPIO34-39 have no output driver */
++            break;
++        case 0x30: //GPIO_ENABLE1_W1TS_REG
++            s->gpio_enable1 |= value & 0x03;
++            break;
++        case 0x34: //GPIO_ENABLE1_W1TC_REG
++            s->gpio_enable1 &= ~value;
++            break;
+         case 0x24: //GPIO_ENABLE_W1TS_REG
+             s->gpio_enable |= value;
+             break;
+@@ -247,6 +294,31 @@ static void esp32_gpio_write(void *opaque, hwaddr addr, uint64_t value,
+         for (int i = 0; i < 32; i++) {
+             if ((1 << i) & diff){
+                 qemu_set_irq(s->gpios_dir[i], (s->gpio_enable & (1 << i)) ? 1 : 0); 
++                s->dir_reported |= 1ULL << i;
++            }
++        }
++    }
++    /* GPIO32-39: the same, from GPIO_OUT1 / GPIO_ENABLE1 (GPIO32 and 33 drive outputs on a real ESP32, for
++       example a CYD's XPT2046 touch controller MOSI and CS) */
++    if ((s->gpio_out1 != oldvalue1) || (s->gpio_enable1 != oldenable1)) {
++        uint32_t diff = (s->gpio_out1 ^ oldvalue1) | (s->gpio_enable1 ^ oldenable1);
++        for (int i = 0; i < 8; i++) {
++            if (((1 << i) & diff) && ((1 << i) & s->gpio_enable1)) {
++                qemu_set_irq(s->gpios[32 + i], (s->gpio_out1 & (1 << i)) ? 1 : 0);
++                if (s->gpio_out1 & (1 << i)) {
++                    s->gpio_in1 |= (1 << i);
++                } else {
++                    s->gpio_in1 &= ~(1 << i);
++                }
++            }
++        }
++    }
++    if (s->gpio_enable1 != oldenable1) {
++        uint32_t diff = s->gpio_enable1 ^ oldenable1;
++        for (int i = 0; i < 8; i++) {
++            if ((1 << i) & diff) {
++                qemu_set_irq(s->gpios_dir[32 + i], (s->gpio_enable1 & (1 << i)) ? 1 : 0);
++                s->dir_reported |= 1ULL << (32 + i);
+             }
+         }
+     }
+@@ -279,8 +351,8 @@ static void esp32_gpio_init(Object *obj)
+     sysbus_init_mmio(sbd, &s->iomem);
+     sysbus_init_irq(sbd, &s->irq);
+     qdev_init_gpio_out_named(DEVICE(s), &s->irq, SYSBUS_DEVICE_GPIO_IRQ, 1);
+-    qdev_init_gpio_out_named(DEVICE(s), s->gpios, ESP32_GPIOS, 32);
+-    qdev_init_gpio_out_named(DEVICE(s), s->gpios_dir, ESP32_GPIOS_DIR, 32);
++    qdev_init_gpio_out_named(DEVICE(s), s->gpios, ESP32_GPIOS, 40);
++    qdev_init_gpio_out_named(DEVICE(s), s->gpios_dir, ESP32_GPIOS_DIR, 40);
+     qdev_init_gpio_out_named(DEVICE(s), s->gpios_sync, ESP32_GPIOS_SYNC, 1);
+     qdev_init_gpio_in_named(DEVICE(s), set_gpio, ESP32_GPIOS_IN, 40);
+     s->gpio_in = 0x1;
+diff --git a/hw/xtensa/esp32_picsimlab.c b/hw/xtensa/esp32_picsimlab.c
+index d8a199dd21..a7bb8c7055 100644
+--- a/hw/xtensa/esp32_picsimlab.c
++++ b/hw/xtensa/esp32_picsimlab.c
+@@ -808,7 +808,7 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
+       pout_irq = qemu_allocate_irqs (pout_irq_handler, NULL, pinmap[0]+1);
+       for(int pin = 1; pin < (pinmap[0]+1); pin++){
+         if(pinmap[pin] >= 0 ){
+-           if(pinmap[pin]  < 32){
++           if(pinmap[pin]  < 40){   /* GPIO32-39 have outputs too (GPIO_OUT1) */
+               qdev_connect_gpio_out_named(DEVICE(&s->gpio), ESP32_GPIOS, pinmap[pin], pout_irq[pin]);
+               qdev_connect_gpio_out_named(DEVICE(&s->gpio), ESP32_GPIOS_DIR, pinmap[pin] , pdir_irq[pin]);
+               pin_irq[pin]=qdev_get_gpio_in_named(DEVICE(&s->gpio), ESP32_GPIOS_IN, pinmap[pin]);
+diff --git a/include/hw/gpio/esp32_gpio.h b/include/hw/gpio/esp32_gpio.h
+index e1b8a866ca..5c20bb66e6 100644
+--- a/include/hw/gpio/esp32_gpio.h
++++ b/include/hw/gpio/esp32_gpio.h
+@@ -31,11 +31,13 @@ typedef struct Esp32GpioState {
+     uint32_t gpio_acpu_int;
+     uint32_t gpio_acpu_int1;
+     uint32_t gpio_enable;
++    uint32_t gpio_enable1;   /* GPIO32-39 output enable (GPIO_ENABLE1_REG) */
++    uint64_t dir_reported;   /* pins whose direction PICSimLab has been told (bit n = GPIOn) */
+     uint32_t gpio_pin[40];
+     uint32_t gpio_in_sel[256];
+     uint32_t gpio_out_sel[40];
+-    qemu_irq gpios[32];
+-    qemu_irq gpios_dir[32];
++    qemu_irq gpios[40];
++    qemu_irq gpios_dir[40];
+     qemu_irq gpios_sync[1];
+ } Esp32GpioState;
+ 

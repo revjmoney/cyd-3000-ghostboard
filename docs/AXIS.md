@@ -14,10 +14,13 @@ scripts/flash-firmware --bootloader $B/bootloader.bin --partitions $B/partitions
                        --app $B/firmware.bin
 ```
 
-## 2. Give it Wi-Fi without touching the screen
+## 2. Wi-Fi
 
-AXIS keeps its saved networks in NVS (namespace `net`, key `s0`), and the emulated network is an open one named
-`PICSimLabWifi`. Touch doesn't reach the firmware yet, so preload it:
+The emulated network is an open one named `PICSimLabWifi`. On first boot AXIS shows its Wi-Fi picker: click
+`PICSimLabWifi` and it joins and remembers it.
+
+To skip that (scripts, or a board nobody is watching), preload it: AXIS keeps its saved networks in NVS
+(namespace `net`, key `s0`).
 
 ```bash
 tools/nvs_wifi.py                    # defaults: --ssid PICSimLabWifi --namespace net --key s0
@@ -27,10 +30,12 @@ tail -f ~/.ghostboard/serial.log     # axis: joining PICSimLabWifi ... axis: wif
 
 ## 3. First-boot setup over telnet
 
-A fresh AXIS asks for its sysop setup. Normally you tap "OVER TELNET" and read a 6-digit PIN off the screen; with
-touch not working yet, `telnet localhost 2323` still gets the "type the setup PIN" prompt, and the PIN is in the
-board's memory. Read it through the QEMU monitor (the address of `setupPin` comes from your build's
-`firmware.elf`; the PIN is kept inline in the Arduino String):
+A fresh AXIS asks for its sysop setup. Click "OVER TELNET" on the board's screen, note the 6-digit PIN it shows,
+then `telnet localhost 2323` and type the PIN when asked.
+
+For scripted setups with nobody at the screen, the PIN is also in the board's memory. Read it through the QEMU
+monitor (the address of `setupPin` comes from your build's `firmware.elf`; the PIN is kept inline in the Arduino
+String):
 
 ```bash
 NM=~/.platformio/packages/toolchain-xtensa-esp32/bin/xtensa-esp32-elf-nm

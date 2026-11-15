@@ -1,0 +1,237 @@
+From: Rev. J. Money
+Subject: [PATCH 5/5] esp32_gpio: optional CYD touch support for PICSimLab's XPT2046 model
+
+Off unless the board asks for it, with one property (PICSimLab keeps only 511 characters of extra options):
+  -global driver=esp32.gpio,property=touch,value=MISO:CLK:MOSI:CS:PENIRQ:X0:X1:Y0:Y1
+  a CYD (ESP32-2432S028): 39:25:32:33:36:3900:300:3700:200
+
+PICSimLab's bit-bang XPT2046 model, read by LovyanGFX's software SPI, never produced a usable touch:
+- Timing: the model changes MISO on the clock's rising edge; a mode-0 device changes it after the falling edge.
+  Firmware sampling right after raising the clock read every bit one clock early (readings doubled). Changes to
+  the MISO pin made while CLK is high are now held until CLK falls.
+- Range and direction: the model spreads 0..4095 across the LCD in the opposite direction to a CYD's panel and
+  wider than its calibration, so taps landed mirrored and off near the edges. The GPIO model follows the XPT2046
+  control bytes on MOSI and sends each X/Y conversion remapped onto X0..X1 / Y0..Y1 (the raw readings at the
+  model's 0 and 4095 ends). A value is known only after its 12 bits, so each conversion carries the remapped
+  value of the previous conversion of its channel; the first of a new press goes out as 4095 (ignored).
+- Release: the model keeps answering the last position after release, so the panel looked held forever. With
+  PENIRQ high (released), X/Y read 4095 (out of range) like a real idle panel.
+- Pressure: the model answers Z1 = 1000, Z2 = 4095, which makes LovyanGFX's pressure figure negative on the
+  right half of the screen. Pressed: Z1 = 2000, Z2 = 1000; released: Z1 = 0, Z2 = 4095.
+Tested on AXIS Micro BBS 0.53: first-boot buttons, the Wi-Fi picker and its on-screen keyboard across the
+whole screen with 0.5 s taps.
+
+diff --git a/hw/gpio/esp32_gpio.c b/hw/gpio/esp32_gpio.c
+index 95ec855605..6083105b4e 100644
+--- a/hw/gpio/esp32_gpio.c
++++ b/hw/gpio/esp32_gpio.c
+@@ -125,8 +125,111 @@ static int get_triggering(int int_type, int oldval, int val) {
+     return 0; //GPIO interrupt disable
+ }
+ 
++static void apply_gpio_in(Esp32GpioState *s, int n, int val);
++
++static int pin_out_level(Esp32GpioState *s, int pin)
++{
++    return pin < 32 ? (s->gpio_out >> pin) & 1 : (s->gpio_out1 >> (pin - 32)) & 1;
++}
++
++/* The MISO level the firmware sees: the device's level, inverted inside an XPT2046 X/Y data window */
++static void present_miso(Esp32GpioState *s)
++{
++    int v = s->miso_true;
++    int pin = s->xpt2046_penirq_pin;
++    int released = pin >= 0 && (pin < 32 ? (s->gpio_in >> pin) & 1 : (s->gpio_in1 >> (pin - 32)) & 1);
++    for (int k = 0; k < 2; k++) {
++        if (s->spi_edge >= s->inv_from[k] && s->spi_edge <= s->inv_to[k]) {
++            int bit = 11 - (s->spi_edge - s->inv_from[k]);   /* MSB first */
++            int ch = s->win_ch[k], val;
++            if (ch == 3 || ch == 4) {                          /* Z1, Z2: firm pressure while pressed */
++                val = released ? (ch == 3 ? 0 : 4095) : (ch == 3 ? 2000 : 1000);
++            } else {
++                val = released ? 4095 : s->win_out[k];         /* idle panel: 4095, out of range */
++            }
++            v = (val >> bit) & 1;
++            break;
++        }
++    }
++    apply_gpio_in(s, s->spi_miso_delay_pin, v);
++}
++
++static int xpt_map(Esp32GpioState *s, int ch, int t)
++{
++    int a = ch == 5 ? s->xpt2046_x0 : s->xpt2046_y0, b = ch == 5 ? s->xpt2046_x1 : s->xpt2046_y1;
++    int v = a + (b - a) * t / 4095;
++    return v < 0 ? 0 : v > 4095 ? 4095 : v;
++}
++
++/* Follow the XPT2046 conversation after every output write: count rising clock edges while CS is low,
++   collect control bytes from MOSI, open a 12-edge data window after each X/Y/Z1/Z2 command's busy edge. */
++static void track_xpt2046(Esp32GpioState *s)
++{
++    if (s->xpt2046_x0 < 0 || s->spi_clk_pin < 0 || s->spi_mosi_pin < 0 || s->spi_cs_pin < 0 ||
++        s->spi_miso_delay_pin < 0) {
++        return;
++    }
++    int cs = pin_out_level(s, s->spi_cs_pin), clk = pin_out_level(s, s->spi_clk_pin);
++    if (cs) {
++        if (!s->spi_cs_last) {
++            s->spi_edge = 0;
++            s->spi_byte = 0;
++            s->inv_from[0] = s->inv_from[1] = s->inv_to[0] = s->inv_to[1] = -1;
++        }
++    } else if (clk && !s->spi_clk_last) {
++        s->spi_edge++;
++        s->spi_byte = (s->spi_byte << 1) | pin_out_level(s, s->spi_mosi_pin);
++        int pin = s->xpt2046_penirq_pin;
++        int released = pin >= 0 && (pin < 32 ? (s->gpio_in >> pin) & 1 : (s->gpio_in1 >> (pin - 32)) & 1);
++        if (released) {
++            s->xpt_valid[1] = s->xpt_valid[5] = 0;   /* a new press starts with no reading */
++        }
++        for (int k = 0; k < 2; k++) {   /* this edge's true bit, into the conversion it belongs to (firm pressure) */
++            if (s->spi_edge >= s->inv_from[k] && s->spi_edge <= s->inv_to[k]) {
++                s->win_acc[k] = (s->win_acc[k] << 1) | (s->miso_true & 1);
++                if (s->spi_edge == s->inv_to[k] && !released) {
++                    s->xpt_last[s->win_ch[k]] = s->win_acc[k] & 0xfff;
++                    s->xpt_valid[s->win_ch[k]] = 1;
++                }
++            }
++        }
++        if ((s->spi_edge & 7) == 0 && (s->spi_byte & 0x80)) {
++            int ch = (s->spi_byte >> 4) & 7;
++            /* X, Y remapped; Z1, Z2 answered firm (see present_miso) */
++            int on = (ch == 5 || ch == 1 || ch == 3 || ch == 4) && s->xpt2046_x0 >= 0 && s->xpt2046_y0 >= 0;
++            s->inv_from[1] = s->inv_from[0];
++            s->inv_to[1] = s->inv_to[0];
++            s->win_ch[1] = s->win_ch[0];
++            s->win_out[1] = s->win_out[0];
++            s->win_acc[1] = s->win_acc[0];
++            s->inv_from[0] = on ? s->spi_edge + 2 : -1;   /* edge +1 is the busy clock */
++            s->inv_to[0] = on ? s->spi_edge + 13 : -1;
++            s->win_ch[0] = ch;
++            s->win_out[0] = !on || ch == 3 || ch == 4 ? 0
++                          : s->xpt_valid[ch] ? xpt_map(s, ch, s->xpt_last[ch]) : 4095;
++            s->win_acc[0] = 0;
++        }
++        present_miso(s);   /* the firmware samples MISO right after this rising edge */
++    }
++    s->spi_cs_last = cs;
++    s->spi_clk_last = clk;
++}
++
+ static void set_gpio(void *opaque, int n, int val) {
+     Esp32GpioState *s = ESP32_GPIO(opaque);
++    if (n == s->spi_miso_delay_pin && s->spi_clk_pin >= 0 && pin_out_level(s, s->spi_clk_pin)) {
++        s->miso_pending = val;   /* clock is high: a mode-0 device changes MISO after it falls */
++        return;
++    }
++    if (n == s->spi_miso_delay_pin) {
++        s->miso_true = val;
++        present_miso(s);
++        return;
++    }
++    apply_gpio_in(s, n, val);
++}
++
++static void apply_gpio_in(Esp32GpioState *s, int n, int val) {
+     if (n < 32) {
+         int oldval = (s->gpio_in >> n) & 1;
+         int int_type = (s->gpio_pin[n] >> 7) & 7;
+@@ -298,6 +401,12 @@ static void esp32_gpio_write(void *opaque, hwaddr addr, uint64_t value,
+             }
+         }
+     }
++    if (s->miso_pending >= 0 && s->spi_clk_pin >= 0 && !pin_out_level(s, s->spi_clk_pin)) {
++        s->miso_true = s->miso_pending;
++        s->miso_pending = -1;
++        present_miso(s);
++    }
++    track_xpt2046(s);
+     /* GPIO32-39: the same, from GPIO_OUT1 / GPIO_ENABLE1 (GPIO32 and 33 drive outputs on a real ESP32, for
+        example a CYD's XPT2046 touch controller MOSI and CS) */
+     if ((s->gpio_out1 != oldvalue1) || (s->gpio_enable1 != oldenable1)) {
+@@ -336,6 +445,24 @@ static void esp32_gpio_reset_hold(Object *obj, ResetType type)
+ 
+ static void esp32_gpio_realize(DeviceState *dev, Error **errp)
+ {
++    Esp32GpioState *s = ESP32_GPIO(dev);
++    if (s->touch_cfg && *s->touch_cfg) {
++        int v[9];
++        if (sscanf(s->touch_cfg, "%d:%d:%d:%d:%d:%d:%d:%d:%d", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6],
++                   &v[7], &v[8]) != 9) {
++            error_setg(errp, "esp32.gpio touch: want miso:clk:mosi:cs:penirq:x0:x1:y0:y1, got %s", s->touch_cfg);
++            return;
++        }
++        s->spi_miso_delay_pin = v[0];
++        s->spi_clk_pin = v[1];
++        s->spi_mosi_pin = v[2];
++        s->spi_cs_pin = v[3];
++        s->xpt2046_penirq_pin = v[4];
++        s->xpt2046_x0 = v[5];
++        s->xpt2046_x1 = v[6];
++        s->xpt2046_y0 = v[7];
++        s->xpt2046_y1 = v[8];
++    }
+ }
+ 
+ static void esp32_gpio_init(Object *obj)
+@@ -357,6 +484,12 @@ static void esp32_gpio_init(Object *obj)
+     qdev_init_gpio_in_named(DEVICE(s), set_gpio, ESP32_GPIOS_IN, 40);
+     s->gpio_in = 0x1;
+     s->gpio_in1 = 0x8;
++    s->miso_pending = -1;
++    s->spi_cs_last = 1;
++    s->inv_from[0] = s->inv_from[1] = s->inv_to[0] = s->inv_to[1] = -1;
++    for (int i = 0; i < 8; i++) {
++        s->xpt_last[i] = 4095;
++    }
+ }
+ 
+ static Property esp32_gpio_properties[] = {
+@@ -370,6 +503,22 @@ static Property esp32_gpio_properties[] = {
+      * read as held. Set in the instance init when not given. */
+     DEFINE_PROP_UINT32("gpio_in", Esp32GpioState, gpio_in, 0),
+     DEFINE_PROP_UINT32("gpio_in1", Esp32GpioState, gpio_in1, 0),
++    /* -global driver=esp32.gpio,property=spi_miso_delay_pin,value=39
++       -global driver=esp32.gpio,property=spi_clk_pin,value=25   (a CYD's XPT2046) */
++    DEFINE_PROP_INT32("spi_miso_delay_pin", Esp32GpioState, spi_miso_delay_pin, -1),
++    DEFINE_PROP_INT32("spi_clk_pin", Esp32GpioState, spi_clk_pin, -1),
++    /* + spi_mosi_pin=32, spi_cs_pin=33, xpt2046_penirq_pin=36 and the raw readings at PICSimLab's 0 and 4095
++       ends: xpt2046_x0=3900, xpt2046_x1=300, xpt2046_y0=3700, xpt2046_y1=200 for a CYD */
++    DEFINE_PROP_INT32("spi_mosi_pin", Esp32GpioState, spi_mosi_pin, -1),
++    DEFINE_PROP_INT32("spi_cs_pin", Esp32GpioState, spi_cs_pin, -1),
++    DEFINE_PROP_INT32("xpt2046_penirq_pin", Esp32GpioState, xpt2046_penirq_pin, -1),
++    DEFINE_PROP_INT32("xpt2046_x0", Esp32GpioState, xpt2046_x0, -1),
++    DEFINE_PROP_INT32("xpt2046_x1", Esp32GpioState, xpt2046_x1, -1),
++    DEFINE_PROP_INT32("xpt2046_y0", Esp32GpioState, xpt2046_y0, -1),
++    DEFINE_PROP_INT32("xpt2046_y1", Esp32GpioState, xpt2046_y1, -1),
++    /* all of the above in one (PICSimLab keeps only 511 characters of extra options): a CYD is
++       -global driver=esp32.gpio,property=touch,value=39:25:32:33:36:3900:300:3700:200 */
++    DEFINE_PROP_STRING("touch", Esp32GpioState, touch_cfg),
+     DEFINE_PROP_END_OF_LIST(),
+ };
+ 
+diff --git a/include/hw/gpio/esp32_gpio.h b/include/hw/gpio/esp32_gpio.h
+index 5c20bb66e6..347c3fed24 100644
+--- a/include/hw/gpio/esp32_gpio.h
++++ b/include/hw/gpio/esp32_gpio.h
+@@ -33,6 +33,19 @@ typedef struct Esp32GpioState {
+     uint32_t gpio_enable;
+     uint32_t gpio_enable1;   /* GPIO32-39 output enable (GPIO_ENABLE1_REG) */
+     uint64_t dir_reported;   /* pins whose direction PICSimLab has been told (bit n = GPIOn) */
++    int32_t spi_miso_delay_pin;  /* hold this input's changes while spi_clk_pin is high (-1: off) */
++    int32_t spi_clk_pin;
++    int miso_pending;            /* -1 none, else the held level */
++    int32_t spi_mosi_pin, spi_cs_pin, xpt2046_penirq_pin;
++    int miso_true;               /* the level the device drives (before any inversion) */
++    int spi_edge, spi_clk_last, spi_cs_last;
++    uint8_t spi_byte;
++    int inv_from[2], inv_to[2];  /* rising-edge windows of X/Y data: this command's, the one before */
++    int win_ch[2], win_out[2], win_acc[2];
++    int xpt_last[8];             /* last true reading per channel (1 = Y, 5 = X) */
++    int xpt_valid[8];            /* xpt_last was read during the current press */
++    int32_t xpt2046_x0, xpt2046_x1, xpt2046_y0, xpt2046_y1;
++    char *touch_cfg;             /* "miso:clk:mosi:cs:penirq:x0:x1:y0:y1" sets all of the above */
+     uint32_t gpio_pin[40];
+     uint32_t gpio_in_sel[256];
+     uint32_t gpio_out_sel[40];

@@ -34,6 +34,8 @@ fixes it took to run a real dual-core QIO firmware all day:
 | SPI user-mode dummy cycles | every flash read through the driver comes back shifted: NVS wiped each boot (saved Wi-Fi lost), LittleFS won't mount or format |
 | Cache regions stay mapped | about 11 ms per flash call (the whole memory map rebuilt on every cache toggle): file saves crawl, AXIS cluster nodes drop out |
 | ILI9341 row flip | the screen is mirrored left to right |
+| GPIO32-39 outputs and input directions | the touch controller never hears the firmware (its MOSI and CS are GPIO32/33) and the firmware never hears it back |
+| CYD touch: timing, range, release, pressure | taps read doubled, land mirrored, the panel looks held down forever, and the right half of the screen never counts |
 
 The whole story, with how each one was found: [docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md).
 
@@ -79,7 +81,7 @@ scripts/ghostboard-stop              # saves what the firmware wrote to flash, t
 ```
 
 `scripts/ghostboard` (without `--fresh`) keeps what the running firmware saved: settings, Wi-Fi, files in
-internal flash. Each start opens PICSimLab with the board already wired:
+internal flash. Click the screen to touch it. Each start opens PICSimLab with the board already wired:
 
 | Part | ESP32 pins |
 | --- | --- |
@@ -94,7 +96,10 @@ internal flash. Each start opens PICSimLab with the board already wired:
 | --- | --- |
 | `tools/nvs_wifi.py` | preloads the emulated Wi-Fi (open network `PICSimLabWifi`) into NVS, so firmware joins without touch |
 | `tools/sd_fill.py DIR` | copies a folder tree onto the SD card image (needs `pyfatfs`) |
-| `tools/tap.py X Y` | sends a tap to the screen at the firmware's coordinates |
+| `tools/tap.py X Y` | taps the screen at the firmware's coordinates, for scripts and tests (a person just clicks) |
+
+To type into the board's serial console from a script, use PICSimLab's remote control on port 5000: send
+`set part[02].in[01] YOUR COMMAND` (part 02 is the serial terminal).
 | `tools/lfd3k_bridge.py` | an [LRA FLOWTRON DATAMASTER 3000 SERIAL MODEM - LFD3K-SM](https://github.com/revjmoney/lfd3k-sm) on USB answers radio calls into the board |
 
 If GHOSTBOARD saved you a board (or a weekend), keep the coffee coming:
@@ -103,7 +108,7 @@ If GHOSTBOARD saved you a board (or a weekend), keep the coffee coming:
 
 ## Running AXIS
 
-[docs/AXIS.md](docs/AXIS.md): flash an AXIS build, preload Wi-Fi, set it up over telnet, fill the SD card with
+[docs/AXIS.md](docs/AXIS.md): flash an AXIS build, preload Wi-Fi, set it up on the screen or over telnet, fill the SD card with
 themes and menus, join an AXIS cluster as a node, and take LoRa radio calls through an LFD3K-SM modem.
 
 ## Status
@@ -115,7 +120,7 @@ themes and menus, join an AXIS cluster as a node, and take LoRa radio calls thro
 | NVS and LittleFS in internal flash, kept across restarts | yes |
 | SD card | yes |
 | LCD | yes |
-| Touch | **not yet**: taps reach the emulator but not the firmware |
+| Touch | yes: click the screen (tested across the whole screen on AXIS's buttons and on-screen keyboard) |
 | AXIS cluster node next to real CYD boards | yes |
 | Speed | slower than a real board; fine for menus, telnet, files and radio calls |
 
